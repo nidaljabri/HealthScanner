@@ -1,0 +1,104 @@
+import praw
+import pandas as pd
+import matplotlib.pyplot as plt
+from datetime import datetime
+import time
+
+# --- Configuration ---
+USER_AGENT = "Scanner 1.0 by /u/healthscanner"
+CLIENT_ID = "your_client_id"
+CLIENT_SECRET = "your_client_secret"
+
+CITIES = ['chicago', 'boston', 'lasvegas', 'houston', 'orlando', 'newark', 'kansascity']
+SEARCH_QUERIES = ['"what\'s going around"', 'sickness', 'ill', 'flu', 'bug']
+INCLUDE_KEYWORDS = ['sick', 'ill', 'covid', 'flu', 'bug', 'virus', 'infection', 'pandemic']
+EXCLUDE_KEYWORDS = ['sick of', 'motion sickness', 'sick and tired', 'worried sick', 'Lightfoot', 'who fell', 'leave']
+
+DATE_CUTOFF = pd.to_datetime('2021-09-01')
+
+# --- Reddit API Setup ---
+def init_reddit():
+    return praw.Reddit(
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        user_agent=USER_AGENT
+    )
+
+# --- Data Collection ---
+def collect_data(reddit):
+    data = []
+    for city in CITIES:
+        for query in SEARCH_QUERIES:
+            try:
+                posts = reddit.subreddit(city).search(query, limit=None)
+                time.sleep(2)
+                for post in posts:
+                    title = post.title.lower()
+                    if any(kw in title for kw in INCLUDE_KEYWORDS) and not any(kw in title for kw in EXCLUDE_KEYWORDS):
+                        data.append({
+                            'city': city,
+                            'headline': post.title,
+                            'date': datetime.fromtimestamp(post.created_utc),
+                            'upvotes': post.score,
+                            'uv_ratio': post.upvote_ratio,
+                        })
+            except Exception as e:
+                print(f"Error fetching posts for {city}: {e}")
+    return pd.DataFrame(data)
+
+# --- Data Processing ---
+def process_data(df):
+    df['date'] = pd.to_datetime(df['date'])
+    df = df[df['date'] > DATE_CUTOFF]
+    df['month'] = df['date'].dt.to_period('M')
+    return df
+
+def aggregate_data(df):
+    df_monthly = df.groupby(['month', 'city']).agg({'upvotes': 'sum'}).reset_index()
+    df_monthly['month'] = df_monthly['month'].dt.to_timestamp()
+    df_monthly = df_monthly.sort_values(by='month')
+
+    df_daily = df.groupby(['date', 'city']).agg({'upvotes': 'sum'}).reset_index()
+    df_daily = df_daily.sort_values(by='date')
+
+    return df_monthly, df_daily
+
+# --- Visualization ---
+def plot_data(df_daily):
+    shade_mask = (
+        (df_daily['date'].between('2021-09-01', '2022-04-30')) |
+        (df_daily['date'].between('2022-09-01', '2023-04-30')) |
+        (df_daily['date'].between('2023-09-01', '2024-04-30')) |
+        (df_daily['date'].between('2024-09-01', '2024-04-30'))
+    )
+
+    plt.figure(figsize=(10, 5))
+    for city in CITIES:
+        city_data = df_daily[df_daily['city'] == city]
+        plt.plot(city_data['date'], city_data['upvotes'], label=city)
+
+    plt.fill_between(df_daily['date'], df_daily['upvotes'], df_daily['upvotes'].max(), where=shade_mask, color='gray', alpha=0.3)
+    plt.fill_between(df_daily['date'], df_daily['upvotes'], df_daily['upvotes'].min(), where=shade_mask, color='gray', alpha=0.3)
+
+    plt.xlabel('Date')
+    plt.ylabel('Total Upvotes')
+    plt.title('Social Media Disease Incidence Metric Analysis')
+    plt.grid(True)
+    plt.xticks(rotation=45)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+# --- Main Execution ---
+def main():
+    reddit = init_reddit()
+    raw_data = collect_data(reddit)
+    if raw_data.empty:
+        print("No data collected.")
+        return
+    processed_data = process_data(raw_data)
+    df_monthly, df_daily = aggregate_data(processed_data)
+    plot_data(df_daily)
+
+if __name__ == "__main__":
+    main()
